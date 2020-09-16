@@ -1,28 +1,32 @@
-import torch
-import unittest
-import operator
-import numbers
-import pickle
 import copy
-from torch.fx import symbolic_trace, Proxy, Node, GraphModule, Tracer, Graph
-from torch.fx.proxy import TraceError
-
-from fx.quantization import Quantizer
-
+import numbers
+import operator
+import pickle
+import unittest
 from typing import Any, Callable, Dict, Optional, Tuple, Union
+
+import torch
+from fx.quantization import Quantizer
+from torch.fx import Graph, GraphModule, Node, Proxy, Tracer, symbolic_trace
+from torch.fx.experimental import GraphManipulation
+from torch.fx.proxy import TraceError
 from torch.testing._internal.common_utils import run_tests, skipIfRocm
 from torch.testing._internal.jit_utils import JitTestCase
 
+
 try:
     from torchvision.models import resnet18
+
     HAS_TORCHVISION = True
 except ImportError:
     HAS_TORCHVISION = False
 skipIfNoTorchVision = unittest.skipIf(not HAS_TORCHVISION, "no torchvision")
 
+
 class SimpleTest(torch.nn.Module):
     def forward(self, x):
         return torch.relu(x + 3.0)
+
 
 class TestFX(JitTestCase):
     def checkGraphModule(self, m: torch.nn.Module, args, kwargs=None):
@@ -53,7 +57,9 @@ class TestFX(JitTestCase):
 
             def forward(self, A, B, c):
                 t = torch.sigmoid(A) + self.lin(c)
-                return self.sub_mod(t.data + self.w + t + 1 - A + B // A + -A + A.add(B, alpha=3))
+                return self.sub_mod(
+                    t.data + self.w + t + 1 - A + B // A + -A + A.add(B, alpha=3)
+                )
 
         m = MyModule()
         gm = symbolic_trace(m)
@@ -69,9 +75,8 @@ class TestFX(JitTestCase):
         gm2 = symbolic_trace(m2)
 
         class T(torch.nn.Module):
-
             def forward(self, A, b=4, *args, c=5, **kwargs):
-                x = A + 1 + args[0] + kwargs['3']
+                x = A + 1 + args[0] + kwargs["3"]
                 return x
 
         t = T()
@@ -80,11 +85,11 @@ class TestFX(JitTestCase):
     def test_args_kwargs(self):
         class T(torch.nn.Module):
             def forward(self, *args, **kwargs):
-                x = args[0] + kwargs['foo']
+                x = args[0] + kwargs["foo"]
                 return x
 
         t = T()
-        self.checkGraphModule(t, (torch.rand(1), torch.rand(1)), {'foo': torch.rand(1)})
+        self.checkGraphModule(t, (torch.rand(1), torch.rand(1)), {"foo": torch.rand(1)})
 
     def test_fx_shifts(self):
         class MyModule(torch.nn.Module):
@@ -99,9 +104,9 @@ class TestFX(JitTestCase):
     def test_dict(self):
         class MyDictMod(torch.nn.Module):
             def forward(self, d):
-                return d['3'].relu(), {'4' : d['3'].neg()}
+                return d["3"].relu(), {"4": d["3"].neg()}
 
-        input_dict = {'3': torch.rand(3, 4)}
+        input_dict = {"3": torch.rand(3, 4)}
         m = MyDictMod()
 
         self.checkGraphModule(m, (input_dict,))
@@ -109,11 +114,17 @@ class TestFX(JitTestCase):
     def test_disallow_override(self):
         # Custom delegate to disallow in-place tensor operations
         class NoMutableCallTracer(Tracer):
-            def create_node(self, kind : str, target : Union[str, Callable],
-                            args : Tuple[Any], kwargs : Dict[str, Any], name : Optional[str] = None) -> Node:
+            def create_node(
+                self,
+                kind: str,
+                target: Union[str, Callable],
+                args: Tuple[Any],
+                kwargs: Dict[str, Any],
+                name: Optional[str] = None,
+            ) -> Node:
                 name = target if isinstance(target, str) else torch.typename(target)
-                if name[-1] == '_':
-                    raise RuntimeError('In-place operations are not supported')
+                if name[-1] == "_":
+                    raise RuntimeError("In-place operations are not supported")
                 return super().create_node(kind, target, args, kwargs, name)
 
         # Test method
@@ -124,7 +135,7 @@ class TestFX(JitTestCase):
 
         m = MyInplaceMod()
 
-        with self.assertRaisesRegex(RuntimeError, 'In-place operations'):
+        with self.assertRaisesRegex(RuntimeError, "In-place operations"):
             NoMutableCallTracer().trace(m)
 
         # Test free function
@@ -132,8 +143,9 @@ class TestFX(JitTestCase):
             def forward(self, x):
                 torch.log_(x)
                 return x
+
         m2 = MyInplaceMod2()
-        with self.assertRaisesRegex(RuntimeError, 'In-place operations'):
+        with self.assertRaisesRegex(RuntimeError, "In-place operations"):
             NoMutableCallTracer().trace(m2)
 
         # Test symbolic node as an arg
@@ -142,8 +154,9 @@ class TestFX(JitTestCase):
                 y = torch.ones(3, 4)
                 y.add_(x)
                 return x
+
         m3 = MyInplaceMod3()
-        with self.assertRaisesRegex(RuntimeError, 'In-place operations'):
+        with self.assertRaisesRegex(RuntimeError, "In-place operations"):
             NoMutableCallTracer().trace(m3)
 
     def test_leaf_module(self):
@@ -164,12 +177,13 @@ class TestFX(JitTestCase):
         mrm = MyReluMod()
         sym = NoLeafModulesTracer().trace(mrm)
         for node in sym.graph.nodes:
-            self.assertNotEqual(node.op, 'call_module')
+            self.assertNotEqual(node.op, "call_module")
 
     def test_graph_edit_with_proxy(self):
         class M(torch.nn.Module):
             def forward(self, a, b):
                 return a + b
+
         m = M()
         g = symbolic_trace(m).graph
         t = Proxy(g.result)
@@ -249,7 +263,9 @@ class TestFX(JitTestCase):
         # a valid nn.Module, symbolically traces it, lowers the Module to some
         # representation, and wraps that representation up into another
         # nn.Module instance that handles dispatch to the compiled/lowered code.
-        def lower_to_elementwise_interpreter(orig_mod : torch.nn.Module) -> torch.nn.Module:
+        def lower_to_elementwise_interpreter(
+            orig_mod: torch.nn.Module,
+        ) -> torch.nn.Module:
             # ===== Stage 1: Symbolic trace the module =====
             mod = symbolic_trace(orig_mod)
 
@@ -260,10 +276,7 @@ class TestFX(JitTestCase):
             constants = {}
             fn_input_names = []
 
-            target_to_name = {
-                operator.add : "add",
-                operator.mul : "mul"
-            }
+            target_to_name = {operator.add: "add", operator.mul: "mul"}
 
             # For each instruction, create a triple
             # (instruction_name : str, inputs : List[str], output : str)
@@ -272,20 +285,21 @@ class TestFX(JitTestCase):
                 target, args, out_name = n.target, n.args, n.name
                 assert len(n.kwargs) == 0, "kwargs currently not supported"
 
-                if n.op == 'placeholder':
+                if n.op == "placeholder":
                     # Placeholders specify function argument names. Save these
                     # for later when we generate the wrapper GraphModule
                     fn_input_names.append(target)
-                elif n.op == 'call_function':
+                elif n.op == "call_function":
                     assert target in target_to_name, "Unsupported call target " + target
                     arg_names = []
                     for arg in args:
                         if not isinstance(arg, Node):
                             # Pull out constants. These constants will later be
                             # fed to the interpreter C++ object via add_constant()
-                            arg_name = f'constant_{constant_idx}'
+                            arg_name = f"constant_{constant_idx}"
                             constants[arg_name] = torch.Tensor(
-                                [arg] if isinstance(arg, numbers.Number) else arg)
+                                [arg] if isinstance(arg, numbers.Number) else arg
+                            )
                             arg_names.append(arg_name)
                             constant_idx += 1
                         else:
@@ -293,7 +307,7 @@ class TestFX(JitTestCase):
                     instructions.append((target_to_name[target], arg_names, out_name))
 
                 else:
-                    raise RuntimeError('Unsupported opcode' + n.op)
+                    raise RuntimeError("Unsupported opcode" + n.op)
 
             interpreter = torch.classes._TorchScriptTesting._ElementwiseInterpreter()
             # Load constants
@@ -327,21 +341,23 @@ class TestFX(JitTestCase):
             # Add placeholders for fn inputs
             placeholder_nodes = []
             for name in fn_input_names:
-                placeholder_nodes.append(graph.create_node('placeholder', name))
+                placeholder_nodes.append(graph.create_node("placeholder", name))
 
             # Get the interpreter object
-            interpreter_node = graph.create_node('get_param', 'interpreter')
+            interpreter_node = graph.create_node("get_param", "interpreter")
 
             # Add a node to call the interpreter instance
             output_node = graph.create_node(
-                op='call_method', target='__call__', args=(interpreter_node, placeholder_nodes))
+                op="call_method",
+                target="__call__",
+                args=(interpreter_node, placeholder_nodes),
+            )
 
             # Register output
             graph.output(output_node)
 
             # Return final GraphModule!!!
             return GraphModule(wrapper, graph)
-
 
         # Lower GraphModule to C++ interpreter
         lowered = lower_to_elementwise_interpreter(msm)
@@ -364,6 +380,7 @@ class TestFX(JitTestCase):
 
     def test_reserved_getattr(self):
         """Ensure that we do not name any nodes with a reserved builtin like `getattr`"""
+
         class M(torch.nn.Module):
             def forward(self, a):
                 return a.foo.bar.baz
@@ -375,10 +392,16 @@ class TestFX(JitTestCase):
 
     def test_node_tagging(self):
         class TaggingTracer(Tracer):
-            def create_node(self, kind : str, target : Union[str, Callable],
-                            args : Tuple[Any], kwargs : Dict[str, Any], name : Optional[str] = None) -> Node:
+            def create_node(
+                self,
+                kind: str,
+                target: Union[str, Callable],
+                args: Tuple[Any],
+                kwargs: Dict[str, Any],
+                name: Optional[str] = None,
+            ) -> Node:
                 n = super().create_node(kind, target, args, kwargs, name)
-                n.tag = 'foo'
+                n.tag = "foo"
                 return n
 
         class M(torch.nn.Module):
@@ -388,8 +411,8 @@ class TestFX(JitTestCase):
         m = M()
         g = TaggingTracer().trace(m).graph
         for n in g.nodes:
-            self.assertTrue(hasattr(n, 'tag'))
-            self.assertEqual(n.tag, 'foo')
+            self.assertTrue(hasattr(n, "tag"))
+            self.assertEqual(n.tag, "foo")
 
     def test_tensor_attribute(self):
         class TensorAttribute(torch.nn.Module):
@@ -440,9 +463,11 @@ class TestFX(JitTestCase):
         def transform(traced):
             new_graph = copy.deepcopy(traced.graph)
             relu_out = new_graph.create_node(
-                op='call_method', target='neg', args=(new_graph.result,), kwargs={})
+                op="call_method", target="neg", args=(new_graph.result,), kwargs={}
+            )
             new_graph.output(relu_out)
             return GraphModule(traced, new_graph)
+
         transformed = transform(traced)
         copied = copy.deepcopy(transformed)
         x = torch.randn(3, 4)
@@ -458,11 +483,13 @@ class TestFX(JitTestCase):
                 super().__init__()
                 self.sa = SomeArgs()
 
-            def forward(self, x : list):
+            def forward(self, x: list):
                 return self.sa(*x)
 
         ul = UnpacksList()
-        with self.assertRaisesRegex(TraceError, 'Proxy object cannot be unpacked as function argument'):
+        with self.assertRaisesRegex(
+            TraceError, "Proxy object cannot be unpacked as function argument"
+        ):
             symbolic_trace(ul)
 
     def test_unpack_dict_better_error(self):
@@ -475,11 +502,13 @@ class TestFX(JitTestCase):
                 super().__init__()
                 self.sk = SomeKwargs()
 
-            def forward(self, x : dict):
+            def forward(self, x: dict):
                 return self.sk(**x)
 
         ud = UnpacksDict()
-        with self.assertRaisesRegex(TraceError, 'Proxy object cannot be unpacked as function argument'):
+        with self.assertRaisesRegex(
+            TraceError, "Proxy object cannot be unpacked as function argument"
+        ):
             symbolic_trace(ud)
 
     def test_torch_custom_ops(self):
@@ -488,6 +517,7 @@ class TestFX(JitTestCase):
                 b = torch.ops.aten.sigmoid(a)
                 c = torch.ops.aten.cat([a, b])
                 return torch.ops.aten.cat((c, c))
+
         m = M()
         input = torch.randn(3)
         ref_out = m(input)
@@ -499,35 +529,52 @@ class TestFX(JitTestCase):
         st = SimpleTest()
         traced = symbolic_trace(st)
         printed = str(traced)
-        assert 'GraphModuleImpl()' in printed
-        assert 'torch.relu' in printed
+        assert "GraphModuleImpl()" in printed
+        assert "torch.relu" in printed
 
     def test_pretty_print_graph(self):
         class KwargPrintTest(torch.nn.Module):
             def forward(self, x):
                 return torch.squeeze(x + 3.0, dim=2)
+
         st = KwargPrintTest()
         traced = symbolic_trace(st)
         stringed = str(traced.graph)
-        for s in ['args', 'kwargs', 'uses']:
+        for s in ["args", "kwargs", "uses"]:
             assert s in stringed
 
     def test_graph_fns(self):
         g = Graph()
-        a = g.placeholder('a')
-        b = g.call_module('linear', (a,))
-        c = g.get_param('bias')
-        d = g.call_method('add', (b, c))
+        a = g.placeholder("a")
+        b = g.call_module("linear", (a,))
+        c = g.get_param("bias")
+        d = g.call_method("add", (b, c))
         e = g.call_function(torch.sin, (d,))
         g.output(e)
         mod = torch.nn.Module()
         mod.linear = torch.nn.Linear(3, 4)
         mod.bias = torch.rand(4)
         gm = GraphModule(mod, g)
-        input = torch.rand(3) 
+        input = torch.rand(3)
         r = gm(input)
         ref = torch.sin(mod.linear(input) + mod.bias)
-        self.assertEqual(r, ref) 
+        self.assertEqual(r, ref)
 
-if __name__ == '__main__':
+    def test_replace_all_uses_with(self):
+        class testModule(torch.nn.Module):
+            def forward(self, a, b):
+                return a + b
+
+        m = testModule()
+        traced = symbolic_trace(m)
+        input1 = torch.randn(1)
+        input2 = torch.randn(1)
+        assert (input1 + input2) == traced(input1, input2)
+        GraphManipulation.replace_all_uses_with(
+            traced, "call_function", operator.add, "call_function", operator.mul
+        )
+        assert (input1 * input2) == traced(input1, input2)
+
+
+if __name__ == "__main__":
     run_tests()
